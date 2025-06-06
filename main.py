@@ -5,16 +5,9 @@ import time
 from pydantic import BaseModel
 from fastapi import FastAPI, BackgroundTasks
 from scripts import JobDescriptionProcessor, ResumeProcessor, Score
-from scripts.utils.db import init_pool, close_all
-from contextlib import asynccontextmanager
+from scripts.utils.db import close_all
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_pool()
-    yield
-    close_all()
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 logging.basicConfig(level=logging.INFO)
 
