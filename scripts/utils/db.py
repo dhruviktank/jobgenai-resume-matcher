@@ -1,24 +1,30 @@
-from psycopg2.pool import SimpleConnectionPool
+from psycopg2.pool import ThreadedConnectionPool
+import os
 
-# PostgreSQL connection string (DSN)
-PG_DSN = (
+PG_DSN = os.getenv("PG_DSN") or (
     "postgresql://neondb_owner:npg_SfzAVOih23Xp"
     "@ep-fancy-sunset-a1xqv7sq-pooler.ap-southeast-1.aws.neon.tech"
     "/jobgenai?sslmode=require"
 )
 
-# Singleton pool using DSN
-pool = SimpleConnectionPool(
-    minconn=1,
-    maxconn=5,
-    dsn=PG_DSN
-)
+_pool = None
+
+def init_pool():
+    global _pool
+    if _pool is None:
+        _pool = ThreadedConnectionPool(minconn=1, maxconn=5, dsn=PG_DSN)
 
 def get_conn():
-    return pool.getconn()
+    if _pool is None:
+        raise RuntimeError("Connection pool not initialized")
+    return _pool.getconn()
 
 def put_conn(conn):
-    pool.putconn(conn)
+    if _pool:
+        _pool.putconn(conn)
 
 def close_all():
-    pool.closeall()
+    global _pool
+    if _pool:
+        _pool.closeall()
+        _pool = None

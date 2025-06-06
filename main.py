@@ -5,9 +5,16 @@ import time
 from pydantic import BaseModel
 from fastapi import FastAPI, BackgroundTasks
 from scripts import JobDescriptionProcessor, ResumeProcessor, Score
-from scripts.utils.db import close_all
+from scripts.utils.db import init_pool, close_all
+from contextlib import contextmanager
 
-app = FastAPI()
+@contextmanager
+def lifespan(app: FastAPI):
+    init_pool()
+    yield
+    close_all()
+
+app = FastAPI(lifespan=lifespan)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -45,29 +52,24 @@ def background_process(task_id: str):
 
         if not score.is_valid_task():
             logging.warning(f"⚠️ Task ID {task_id} does not exist. Skipping processing.")
-            close_all()
             return
 
         if not process_resumes(task_id):
             logging.error(f"❌ Resume processing failed for task_id={task_id}")
             score.update_status("FAILED")
-            close_all()
             return
 
         if not process_job_descriptions(task_id):
             logging.error(f"❌ Job description processing failed for task_id={task_id}")
             score.update_status("FAILED")
-            close_all()
             return
 
         if not update_match_score(task_id):
             logging.error(f"❌ Score update failed for task_id={task_id}")
             score.update_status("FAILED")
-            close_all()
             return
 
         score.update_status("SUCCESS")
-        close_all()
         elapsed = time.time() - start_time
         logging.info(f"✅ Background processing completed in {elapsed:.2f} seconds for task_id={task_id}")
 
