@@ -114,6 +114,9 @@ class Score:
             boost_factor = 1 + (len(common_terms) / 5)  # Soft boost for overlap
 
             score = (matched_score / total_possible) * boost_factor
+
+            if score < 0.6:
+                score = score + (0.6 - score) * 0.5
             final_score = max(min(score, 1.0), 0.3)  # Clamp between 0.3 and 1.0
             return round(final_score, 4)
         except Exception as e:
