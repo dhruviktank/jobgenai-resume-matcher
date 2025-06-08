@@ -1,4 +1,4 @@
-from psycopg2.pool import SimpleConnectionPool
+from psycopg2.pool import ThreadedConnectionPool
 
 # PostgreSQL connection string (DSN)
 PG_DSN = (
@@ -8,7 +8,7 @@ PG_DSN = (
 )
 
 # Singleton pool using DSN
-pool = SimpleConnectionPool(
+pool = ThreadedConnectionPool(
     minconn=1,
     maxconn=5,
     dsn=PG_DSN

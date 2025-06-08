@@ -5,7 +5,6 @@ import time
 from pydantic import BaseModel
 from fastapi import FastAPI, BackgroundTasks
 from scripts import JobDescriptionProcessor, ResumeProcessor, Score
-from scripts.utils.db import close_all
 
 app = FastAPI()
 
