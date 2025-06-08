@@ -68,7 +68,7 @@ class JobDescriptionProcessor:
             put_conn(conn)
 
             if not rows:
-                logging.warning(f"No jobs found for task_id={self.task_id}")
+                logging.info(f"No jobs without keywords for task_id={self.task_id}")
                 return []
 
             return [{"id": row[0], "description": row[1]} for row in rows]

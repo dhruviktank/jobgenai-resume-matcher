@@ -115,8 +115,14 @@ class Score:
 
             score = (matched_score / total_possible) * boost_factor
 
-            if score < 0.6:
-                score = score + (0.6 - score) * 0.5
+            if score < 0.7:
+                score = score + (0.7 - score) * 0.6
+            if score > 0.6 and score < 0.75:
+                score = score * 0.2 + score
+            if score > 0.4 and score < 0.6:
+                score = score * 0.15 + score
+            if score < 0.4:
+                score = score * 0.1 + score
             final_score = max(min(score, 1.0), 0.3)  # Clamp between 0.3 and 1.0
             return round(final_score, 4)
         except Exception as e:
