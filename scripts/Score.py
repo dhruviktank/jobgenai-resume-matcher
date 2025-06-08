@@ -3,7 +3,6 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from .utils.db import get_conn, put_conn
-import time
 
 class Score:
     def __init__(self, task_id: int):
@@ -22,7 +21,6 @@ class Score:
                 raise Exception(jobs["error"])
 
             for job in jobs:
-                start_time = time.time()
                 try:
                     job_keywords = job.get("keywords", [])
                     jd_string = " ".join(job_keywords)
@@ -31,8 +29,6 @@ class Score:
                     similarity_score = round(tfidf_score * 100, 2)
 
                     self.save_score(job["id"], float(similarity_score))
-                    elapsed = time.time() - start_time
-                    logging.info(f"✅ Job ID {job['id']} scored {similarity_score} in {elapsed:.3f} seconds")
                 except Exception as job_e:
                     logging.exception(f"❌ Error scoring job_id={job['id']}: {str(job_e)}")
 
