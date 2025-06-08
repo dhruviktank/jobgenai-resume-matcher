@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from .utils.db import get_conn, put_conn
-
+import time
 
 class Score:
     def __init__(self, task_id: int):
@@ -22,6 +22,7 @@ class Score:
                 raise Exception(jobs["error"])
 
             for job in jobs:
+                start_time = time.time()
                 try:
                     job_keywords = job.get("keywords", [])
                     jd_string = " ".join(job_keywords)
@@ -30,6 +31,8 @@ class Score:
                     similarity_score = round(tfidf_score * 100, 2)
 
                     self.save_score(job["id"], float(similarity_score))
+                    elapsed = time.time() - start_time
+                    logging.info(f"✅ Job ID {job['id']} scored {similarity_score} in {elapsed:.3f} seconds")
                 except Exception as job_e:
                     logging.exception(f"❌ Error scoring job_id={job['id']}: {str(job_e)}")
 
@@ -101,13 +104,28 @@ class Score:
             vectorizer = TfidfVectorizer()
             tfidf_matrix = vectorizer.fit_transform([resume_keywords, job_keywords])
 
-            resume_vec = tfidf_matrix[0].toarray()[0]
-            job_vec = tfidf_matrix[1].toarray()[0]
+            # resume_vec = tfidf_matrix[0].toarray()[0]
+            # job_vec = tfidf_matrix[1].toarray()[0]
 
-            if not np.any(job_vec):
+            # if not np.any(job_vec):
+            #     return 1.0
+
+            # matched_score = np.sum(np.minimum(resume_vec, job_vec))
+
+            resume_vec = tfidf_matrix[0]
+            job_vec = tfidf_matrix[1]
+
+            # If job_vec has no nonzero entries, return 1.0
+            if job_vec.nnz == 0:
                 return 1.0
 
-            matched_score = np.sum(np.minimum(resume_vec, job_vec))
+            resume_dict = dict(zip(resume_vec.indices, resume_vec.data))
+            job_dict = dict(zip(job_vec.indices, job_vec.data))
+
+            matched_score = 0.0
+            for idx, job_val in job_dict.items():
+                resume_val = resume_dict.get(idx, 0.0)
+                matched_score += min(resume_val, job_val)
             total_possible = np.sum(job_vec)
 
             common_terms = set(resume_keywords.split()) & set(job_keywords.split())
@@ -117,9 +135,9 @@ class Score:
 
             if score < 0.7:
                 score = score + (0.7 - score) * 0.6
-            if score > 0.6 and score < 0.75:
+            if 0.6 < score < 0.75:
                 score = score * 0.2 + score
-            if score > 0.4 and score < 0.6:
+            if 0.4 < score < 0.6:
                 score = score * 0.15 + score
             if score < 0.4:
                 score = score * 0.1 + score
