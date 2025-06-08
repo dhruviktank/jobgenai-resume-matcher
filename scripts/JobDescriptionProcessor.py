@@ -61,6 +61,7 @@ class JobDescriptionProcessor:
                 JOIN public."JobMatched" j ON j."taskRequestId" = t.id
                 JOIN public."Job" jd ON j."jobId" = jd.id
                 WHERE t.id = %s
+                AND jd.keywords IS NULL
             """, (self.task_id,))
             rows = cur.fetchall()
             cur.close()
