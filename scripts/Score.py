@@ -4,9 +4,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update
-from sqlalchemy.exc import NoResultFound
+from sqlalchemy.exc import NoResultFound, InterfaceError, OperationalError
 from sqlalchemy.orm import selectinload
 from models import TaskRequest, Resume, JobMatched
+import asyncio
 
 class Score:
     def __init__(self, task_id: str, session_factory):
@@ -166,11 +167,21 @@ class Score:
                 return {"error": str(e)}
 
     async def is_valid_task(self) -> bool:
-        async with self.session_factory() as session:
-            try:
-                stmt = select(TaskRequest).where(TaskRequest.id == self.task_id)
-                result = await session.execute(stmt)
-                return result.scalar_one_or_none() is not None
-            except Exception as e:
-                logging.exception("❌ Error validating task_id existence")
-                return False
+        max_retries = 3
+        delay = 2
+
+        for attempt in range(1, max_retries + 1):
+            async with self.session_factory() as session:
+                try:
+                    stmt = select(TaskRequest).where(TaskRequest.id == self.task_id)
+                    result = await session.execute(stmt)
+                    return result.scalar_one_or_none() is not None
+                except (InterfaceError, OperationalError) as db_error:
+                    logging.warning(f"[Retry {attempt}] ❌ DB connection error: {db_error}")
+                    if attempt == max_retries:
+                        logging.error("Exceeded max retries. Task validation failed.")
+                        return False
+                    await asyncio.sleep(delay)
+                except Exception as e:
+                    logging.exception("❌ Error validating task_id existence")
+                    return False
