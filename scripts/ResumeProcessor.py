@@ -1,16 +1,19 @@
-from .utils.db import get_conn, put_conn
-from .parsers import ParseResume
 import logging
+from sqlalchemy.future import select
+from sqlalchemy.exc import NoResultFound
+from .parsers import ParseResume
+from models import TaskRequest, Resume
 
 class ResumeProcessor:
-    def __init__(self, task_id):
+    def __init__(self, task_id: int, session_factory):
         self.task_id = task_id
+        self.session_factory = session_factory
         self.raw_text = None
         self.resume_id = None
 
-    def process(self) -> bool:
+    async def process(self) -> bool:
         try:
-            success = self.get_resume_data()
+            success = await self.get_resume_data()
             if not success:
                 logging.error(f"❌ Failed to fetch resume data for task_id={self.task_id}")
                 return False
@@ -20,7 +23,8 @@ class ResumeProcessor:
                 logging.warning(f"⚠️ No extracted_keywords found in resume for task_id={self.task_id}")
                 return False
 
-            if self.save_resume_keywords(resume_dict["extracted_keywords"]):
+            saved = await self.save_resume_keywords(resume_dict["extracted_keywords"])
+            if saved:
                 logging.info(f"✅ Resume keywords saved for resume_id={self.resume_id}")
                 return True
             else:
@@ -31,51 +35,43 @@ class ResumeProcessor:
             logging.exception(f"❌ Unexpected error while processing task_id={self.task_id}: {str(e)}")
             return False
 
-    def get_resume_data(self) -> bool:
-        conn = get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT r.id, r."rawText"
-                    FROM public."TaskRequest" t
-                    JOIN public."Resume" r ON r.id = t."resumeId"
-                    WHERE t.id = %s
-                """, (self.task_id,))
-                result = cur.fetchone()
+    async def get_resume_data(self) -> bool:
+        async with self.session_factory() as session:
+            try:
+                stmt = select(TaskRequest).where(TaskRequest.id == self.task_id)
+                result = await session.execute(stmt)
+                task = result.scalar_one()
 
-                if not result:
-                    logging.error(f"❌ No matching resume found for task_id={self.task_id}")
-                    return False
+                stmt = select(Resume).where(Resume.id == task.resumeId)
+                result = await session.execute(stmt)
+                resume = result.scalar_one()
 
-                self.resume_id, self.raw_text = result
+                self.resume_id = resume.id
+                self.raw_text = resume.rawText
                 return True
+            except NoResultFound:
+                logging.error(f"❌ No matching resume found for task_id={self.task_id}")
+                return False
+            except Exception as e:
+                logging.exception(f"❌ Error fetching resume data for task_id={self.task_id}: {str(e)}")
+                return False
 
-        except Exception as e:
-            logging.exception(f"❌ Error fetching resume data for task_id={self.task_id}: {str(e)}")
-            return False
-
-        finally:
-            put_conn(conn)
-
-    def save_resume_keywords(self, keywords: list) -> bool:
+    async def save_resume_keywords(self, keywords: list) -> bool:
         if not isinstance(keywords, list):
             logging.warning("⚠️ Keywords must be a list")
             return False
 
-        conn = get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE public."Resume"
-                    SET keywords = %s
-                    WHERE id = %s
-                """, (keywords, self.resume_id))
-                conn.commit()
+        async with self.session_factory() as session:
+            try:
+                stmt = select(Resume).where(Resume.id == self.resume_id)
+                result = await session.execute(stmt)
+                resume = result.scalar_one()
+                resume.keywords = keywords
+                await session.commit()
                 return True
-
-        except Exception as e:
-            logging.exception(f"❌ Error updating keywords for resume_id={self.resume_id}: {str(e)}")
-            return False
-
-        finally:
-            put_conn(conn)
+            except NoResultFound:
+                logging.error(f"Resume not found for resume_id={self.resume_id}")
+                return False
+            except Exception as e:
+                logging.exception(f"❌ Error updating keywords for resume_id={self.resume_id}: {str(e)}")
+                return False

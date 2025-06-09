@@ -1,81 +1,81 @@
 import logging
 from bs4 import BeautifulSoup
 from .parsers import ParseJobDesc
-from .utils.db import get_conn, put_conn
+from models import Job, JobMatched
+from sqlalchemy.future import select
+from sqlalchemy.exc import NoResultFound
 
 class JobDescriptionProcessor:
-    def __init__(self, task_id: int):
+    def __init__(self, task_id: str, session_factory):
         self.task_id = task_id
+        self.session_factory = session_factory
 
-    def process(self) -> bool:
+    async def process(self) -> bool:
         try:
-            job_data = self.get_current_task_jobs()
+            job_data = await self.get_current_task_jobs()
             if isinstance(job_data, dict) and "error" in job_data:
                 raise Exception(job_data["error"])
 
             for job in job_data:
-                raw_description = self.read_html_description(job["description"])
+                raw_description = self.read_html_description(job.htmlDescription)
                 parsed = ParseJobDesc(raw_description).get_JSON()
 
                 if "extracted_keywords" not in parsed:
-                    logging.warning(f"No keywords extracted for job_id={job['id']}")
+                    logging.warning(f"No keywords extracted for job_id={job.id}")
                     continue
 
-                success = self.save_jd_keywords(job['id'], parsed['extracted_keywords'])
+                success = await self.save_jd_keywords(job.id, parsed['extracted_keywords'])
                 if success is not True:
-                    logging.error(f"Failed to update keywords for job_id={job['id']}: {success}")
+                    logging.error(f"Failed to update keywords for job_id={job.id}: {success}")
 
             return True
         except Exception as e:
             logging.exception(f"❌ Error in JobDescriptionProcessor.process for task_id={self.task_id}: {str(e)}")
             return False
 
-    def save_jd_keywords(self, job_id, keywords):
-        conn = get_conn()
-        try:
-            cur = conn.cursor()
-            if not isinstance(keywords, list):
-                raise ValueError("Keywords must be a list")
+    async def save_jd_keywords(self, job_id: str, keywords: list):
+        if not isinstance(keywords, list):
+            logging.warning("⚠️ Keywords must be a list")
+            return "Keywords must be a list"
 
-            cur.execute("""
-                UPDATE public."Job"
-                SET keywords = %s
-                WHERE id = %s
-            """, (keywords, job_id))
-            conn.commit()
-            cur.close()
-            return True
-        except Exception as e:
-            logging.exception(f"❌ Error updating keywords in Job table for job_id={job_id}")
-            return str(e)
-        finally:
-            put_conn(conn)
+        async with self.session_factory() as session:
+            try:
+                stmt = select(Job).where(Job.id == job_id)
+                result = await session.execute(stmt)
+                job = result.scalar_one()
 
-    def get_current_task_jobs(self):
-        conn = get_conn()
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT jd.id, jd."htmlDescription"
-                FROM public."TaskRequest" t
-                JOIN public."JobMatched" j ON j."taskRequestId" = t.id
-                JOIN public."Job" jd ON j."jobId" = jd.id
-                WHERE t.id = %s
-                AND jd.keywords IS NULL
-            """, (self.task_id,))
-            rows = cur.fetchall()
-            cur.close()
-            put_conn(conn)
+                job.keywords = keywords
+                await session.commit()
+                return True
+            except NoResultFound:
+                logging.error(f"Job not found for job_id={job_id}")
+                return f"Job not found for job_id={job_id}"
+            except Exception as e:
+                logging.exception(f"❌ Error updating keywords in Job table for job_id={job_id}")
+                return str(e)
 
-            if not rows:
-                logging.info(f"No jobs without keywords for task_id={self.task_id}")
-                return []
+    async def get_current_task_jobs(self):
+        async with self.session_factory() as session:
+            try:
+                stmt = select(JobMatched).where(JobMatched.taskRequestId == self.task_id)
+                result = await session.execute(stmt)
+                job_matched_list = result.scalars().all()
 
-            return [{"id": row[0], "description": row[1]} for row in rows]
-        except Exception as e:
-            logging.exception(f"❌ Error fetching jobs for task_id={self.task_id}")
-            put_conn(conn)
-            return {"error": str(e)}
+                jobs_without_keywords = []
+                for jm in job_matched_list:
+                    stmt_job = select(Job).where(Job.id == jm.jobId)
+                    res = await session.execute(stmt_job)
+                    job = res.scalar_one_or_none()
+                    if job and (not job.keywords or len(job.keywords) == 0):
+                        jobs_without_keywords.append(job)
+
+                if not jobs_without_keywords:
+                    logging.info(f"No jobs without keywords for task_id={self.task_id}")
+
+                return jobs_without_keywords
+            except Exception as e:
+                logging.exception(f"❌ Error fetching jobs for task_id={self.task_id}")
+                return {"error": str(e)}
 
     def read_html_description(self, html_content: str) -> str:
         try:

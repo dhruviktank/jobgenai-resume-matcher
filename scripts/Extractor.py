@@ -6,11 +6,11 @@ import spacy
 from .utils import TextCleaner
 
 try:
-    nlp = spacy.load("en_core_web_sm")
+    nlp = spacy.load("en_core_web_md")
 except OSError:
     from spacy.cli import download
-    download("en_core_web_sm")
-    nlp = spacy.load("en_core_web_sm")
+    download("en_core_web_md")
+    nlp = spacy.load("en_core_web_md")
 
 
 RESUME_SECTIONS = [

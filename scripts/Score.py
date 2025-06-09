@@ -1,99 +1,112 @@
 import logging
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from .utils.db import get_conn, put_conn
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy import update
+from sqlalchemy.exc import NoResultFound
+from sqlalchemy.orm import selectinload
+from models import TaskRequest, Resume, JobMatched
 
 class Score:
-    def __init__(self, task_id: int):
+    def __init__(self, task_id: str, session_factory):
         self.task_id = task_id
+        self.session_factory = session_factory
 
-    def calculate_score(self):
+    async def calculate_score(self):
+        async with self.session_factory() as session:
+            try:
+                resume = await self.get_resume(session)
+                if not resume:
+                    raise Exception("Resume not found")
+
+                resume_keywords = resume.keywords or []
+                resume_string = " ".join(resume_keywords)
+
+                jobs = await self.get_jobs(session)
+                if not jobs:
+                    raise Exception("No jobs found")
+                job_scores = []
+                for job in jobs:
+                    try:
+                        job_keywords = job.keywords or []
+                        jd_string = " ".join(job_keywords)
+
+                        tfidf_score = self.tfidf_job_in_resume_score(resume_string, jd_string)
+                        similarity_score = round(tfidf_score * 100, 2)
+
+                        job_scores.append((job.id, float(similarity_score)))
+                        # await self.save_score(session, job.id, float(similarity_score))
+                    except Exception as job_e:
+                        logging.exception(f"❌ Error scoring job_id={job.id}: {str(job_e)}")
+
+                if job_scores:
+                    await self.save_all_scores(session, job_scores)
+
+            except Exception as e:
+                logging.exception(f"❌ Error in calculate_score for task_id={self.task_id}: {str(e)}")
+
+    async def save_all_scores(self, session: AsyncSession, job_scores: list[tuple[str, float]]):
         try:
-            resume = self.get_resume()
-            if "error" in resume:
-                raise Exception(resume["error"])
-            resume_keywords = resume.get("keywords", [])
-            resume_string = " ".join(resume_keywords)
+            for job_id, score in job_scores:
+                stmt = (
+                    update(JobMatched)
+                    .where(
+                        JobMatched.taskRequestId == self.task_id,
+                        JobMatched.jobId == job_id
+                    )
+                    .values(similarityScore=score)
+                )
+                await session.execute(stmt)
 
-            jobs = self.get_jobs()
-            if "error" in jobs:
-                raise Exception(jobs["error"])
+            await session.commit()
+            logging.info(f"✅ Saved scores for {len(job_scores)} jobs in bulk")
+        except Exception:
+            await session.rollback()
+            logging.exception("❌ Bulk update of similarity scores failed")
 
-            for job in jobs:
-                try:
-                    job_keywords = job.get("keywords", [])
-                    jd_string = " ".join(job_keywords)
-
-                    tfidf_score = self.tfidf_job_in_resume_score(resume_string, jd_string)
-                    similarity_score = round(tfidf_score * 100, 2)
-
-                    self.save_score(job["id"], float(similarity_score))
-                except Exception as job_e:
-                    logging.exception(f"❌ Error scoring job_id={job['id']}: {str(job_e)}")
-
-        except Exception as e:
-            logging.exception(f"❌ Error in calculate_score for task_id={self.task_id}: {str(e)}")
-
-    def save_score(self, job_id, score):
-        conn = get_conn()
+    async def save_score(self, session: AsyncSession, job_id: str, score: float):
         try:
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE public."JobMatched"
-                SET "similarityScore" = %s
-                WHERE "taskRequestId" = %s AND "jobId" = %s
-            """, (score, self.task_id, job_id))
-            conn.commit()
-            cur.close()
-            return {"status": "Score saved"}
+            stmt = select(JobMatched).where(
+                JobMatched.taskRequestId == self.task_id,
+                JobMatched.jobId == job_id
+            )
+            result = await session.execute(stmt)
+            job_matched = result.scalars().first()
+            job_matched.similarityScore = score
+        except NoResultFound:
+            logging.error(f"JobMatched not found for taskRequestId={self.task_id} and jobId={job_id}")
         except Exception as e:
             logging.exception(f"❌ Failed to update similarityScore for job_id={job_id}")
-            return {"error": str(e)}
-        finally:
-            put_conn(conn)
 
-    def get_resume(self):
-        conn = get_conn()
+    async def get_resume(self, session: AsyncSession):
         try:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT r.id, r.keywords
-                FROM public."TaskRequest" t
-                JOIN public."Resume" r ON r.id = t."resumeId"
-                WHERE t.id = %s
-            """, (self.task_id,))
-            row = cur.fetchone()
-            cur.close()
-            if row:
-                return {"id": row[0], "keywords": row[1]}
-            else:
-                raise ValueError("No resume found for task_id: {}".format(self.task_id))
+            stmt = select(TaskRequest).where(TaskRequest.id == self.task_id)
+            result = await session.execute(stmt)
+            task_request = result.scalar_one()
+
+            stmt = select(Resume).where(Resume.id == task_request.resumeId)
+            result = await session.execute(stmt)
+            return result.scalar_one()
+        except NoResultFound:
+            logging.error(f"Resume not found for task_id={self.task_id}")
+            return None
         except Exception as e:
             logging.exception("❌ Error fetching resume")
-            return {"error": str(e)}
-        finally:
-            put_conn(conn)
+            return None
 
-    def get_jobs(self):
-        conn = get_conn()
+    async def get_jobs(self, session: AsyncSession):
         try:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT jd.id, jd.keywords
-                FROM public."TaskRequest" t
-                JOIN public."JobMatched" j ON j."taskRequestId" = t.id
-                JOIN public."Job" jd ON j."jobId" = jd.id
-                WHERE t.id = %s
-            """, (self.task_id,))
-            rows = cur.fetchall()
-            cur.close()
-            return [{"id": row[0], "keywords": row[1]} for row in rows]
+            stmt = select(JobMatched).where(JobMatched.taskRequestId == self.task_id).options(
+                selectinload(JobMatched.job)
+            )
+            result = await session.execute(stmt)
+            job_matched_list = result.scalars().all()
+            jobs = [jm.job for jm in job_matched_list if jm.job]
+            return jobs
         except Exception as e:
             logging.exception("❌ Error fetching jobs")
-            return {"error": str(e)}
-        finally:
-            put_conn(conn)
+            return []
 
     def tfidf_job_in_resume_score(self, resume_keywords: str, job_keywords: str) -> float:
         try:
@@ -118,10 +131,7 @@ class Score:
             resume_dict = dict(zip(resume_vec.indices, resume_vec.data))
             job_dict = dict(zip(job_vec.indices, job_vec.data))
 
-            matched_score = 0.0
-            for idx, job_val in job_dict.items():
-                resume_val = resume_dict.get(idx, 0.0)
-                matched_score += min(resume_val, job_val)
+            matched_score = sum(min(resume_dict.get(idx, 0.0), job_val) for idx, job_val in job_dict.items())
             total_possible = np.sum(job_vec)
 
             common_terms = set(resume_keywords.split()) & set(job_keywords.split())
@@ -130,59 +140,37 @@ class Score:
             score = (matched_score / total_possible) * boost_factor
 
             if score < 0.7:
-                score = score + (0.7 - score) * 0.6
+                score += (0.7 - score) * 0.6
             if 0.6 < score < 0.75:
                 score = score * 0.2 + score
             if 0.4 < score < 0.6:
                 score = score * 0.15 + score
             if score < 0.4:
                 score = score * 0.1 + score
-            final_score = max(min(score, 1.0), 0.3)  # Clamp between 0.3 and 1.0
-            return round(final_score, 4)
+            return max(min(score, 1.0), 0.3)
         except Exception as e:
             logging.exception("❌ Error calculating TF-IDF containment score")
-            return 0.3  # Safe fallback minimum
+            return 0.3
 
-    def tfidf_cosine_similarity(self, str1, str2):
-        try:
-            vectorizer = TfidfVectorizer(stop_words='english')
-            tfidf_matrix = vectorizer.fit_transform([str1, str2])
-            cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])
-            return float(cosine_sim[0][0])
-        except Exception as e:
-            logging.exception("❌ Error calculating cosine similarity")
-            return 0.0
+    async def update_status(self, status="IN_PROGRESS"):
+        async with self.session_factory() as session:
+            try:
+                stmt = select(TaskRequest).where(TaskRequest.id == self.task_id)
+                result = await session.execute(stmt)
+                task_request = result.scalar_one()
+                task_request.matchStatus = status
+                await session.commit()
+                return {"status": "Match status updated"}
+            except Exception as e:
+                logging.exception("❌ Error updating matchStatus")
+                return {"error": str(e)}
 
-    def update_status(self, status = "IN_PROGRESS"):
-        conn = get_conn()
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE public."TaskRequest"
-                SET "matchStatus" = %s
-                WHERE id = %s
-            """, (status, self.task_id))
-            conn.commit()
-            cur.close()
-            return {"status": "Match status updated"}
-        except Exception as e:
-            logging.exception("❌ Error updating matchStatus")
-            return {"error": str(e)}
-        finally:
-            put_conn(conn)
-
-    def is_valid_task(self) -> bool:
-        conn = get_conn()
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT 1 FROM public."TaskRequest" WHERE id = %s
-            """, (self.task_id,))
-            exists = cur.fetchone() is not None
-            cur.close()
-            return exists
-        except Exception as e:
-            logging.exception("❌ Error validating task_id existence")
-            return False
-        finally:
-            put_conn(conn)
+    async def is_valid_task(self) -> bool:
+        async with self.session_factory() as session:
+            try:
+                stmt = select(TaskRequest).where(TaskRequest.id == self.task_id)
+                result = await session.execute(stmt)
+                return result.scalar_one_or_none() is not None
+            except Exception as e:
+                logging.exception("❌ Error validating task_id existence")
+                return False

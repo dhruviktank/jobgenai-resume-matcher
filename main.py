@@ -1,32 +1,42 @@
 import json
 import logging
 import time
-
+import asyncio
+from fastapi import FastAPI, Depends
 from pydantic import BaseModel
-from fastapi import FastAPI, BackgroundTasks
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from scripts import JobDescriptionProcessor, ResumeProcessor, Score
 
-app = FastAPI()
+DATABASE_URL = "postgresql+asyncpg://neondb_owner:npg_SfzAVOih23Xp@ep-fancy-sunset-a1xqv7sq-pooler.ap-southeast-1.aws.neon.tech/jobgenai"
+
+engine = create_async_engine(
+    DATABASE_URL,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=1800,
+)
+async_session = async_sessionmaker(bind=engine, expire_on_commit=False)
 
 logging.basicConfig(level=logging.INFO)
+app = FastAPI()
+
+async def get_db():
+    async with async_session() as session:
+        yield session
 
 class JobMatchRequest(BaseModel):
     taskId: str
 
 @app.get("/")
-def root():
-    try:
-        return {"status": "✅ Health Checkup: Success"}
-    except Exception as e:
-        logging.exception("❌ Health check failed.")
-        return {"error": str(e)}
+async def root():
+    return {"status": "✅ Health Checkup: Success"}
 
 @app.post("/webhook/job-match")
-def process(request: JobMatchRequest, background_tasks: BackgroundTasks):
+async def process(request: JobMatchRequest, db: AsyncSession = Depends(get_db)):
     task_id = request.taskId
     logging.info(f"📥 Received job match request for task_id={task_id}")
-    background_tasks.add_task(background_process, task_id)
-
+    asyncio.create_task(background_process(task_id))
     return {
         "statusCode": 200,
         "body": json.dumps({
@@ -35,62 +45,66 @@ def process(request: JobMatchRequest, background_tasks: BackgroundTasks):
         })
     }
 
-def background_process(task_id: str):
+
+async def background_process(task_id: str):
     start_time = time.time()
-    score = Score(task_id)
+    score = Score(task_id, async_session)
 
     try:
         logging.info(f"🚀 Starting background processing for task_id={task_id}")
 
-        if not score.is_valid_task():
+        if not await score.is_valid_task():
             logging.warning(f"⚠️ Task ID {task_id} does not exist. Skipping processing.")
+            await score.update_status("FAILED")
             return
 
-        if not process_resumes(task_id):
+        if not await process_resumes(task_id):
             logging.error(f"❌ Resume processing failed for task_id={task_id}")
-            score.update_status("FAILED")
+            await score.update_status("FAILED")
             return
 
-        if not process_job_descriptions(task_id):
+        if not await process_job_descriptions(task_id):
             logging.error(f"❌ Job description processing failed for task_id={task_id}")
-            score.update_status("FAILED")
+            await score.update_status("FAILED")
             return
 
-        if not update_match_score(task_id):
+        if not await update_match_score(task_id):
             logging.error(f"❌ Score update failed for task_id={task_id}")
-            score.update_status("FAILED")
+            await score.update_status("FAILED")
             return
 
-        score.update_status("SUCCESS")
+        await score.update_status("SUCCESS")
         elapsed = time.time() - start_time
         logging.info(f"✅ Background processing completed in {elapsed:.2f} seconds for task_id={task_id}")
 
-    except Exception as e:
+    except Exception:
         logging.exception(f"❌ Unhandled error during background processing for task_id={task_id}")
-        score.update_status("FAILED")
+        await score.update_status("FAILED")
 
-def process_resumes(task_id):
+
+async def process_resumes(task_id):
     try:
-        processor = ResumeProcessor(task_id)
-        return processor.process()
-    except Exception as e:
+        processor = ResumeProcessor(task_id, async_session)
+        return await processor.process()
+    except Exception:
         logging.exception(f"❌ Resume processing failed for task_id={task_id}")
         return False
 
-def process_job_descriptions(task_id):
+
+async def process_job_descriptions(task_id):
     try:
-        processor = JobDescriptionProcessor(task_id)
-        return processor.process()
-    except Exception as e:
+        processor = JobDescriptionProcessor(task_id, async_session)
+        return await processor.process()
+    except Exception:
         logging.exception(f"❌ Job description processing failed for task_id={task_id}")
         return False
 
-def update_match_score(task_id):
+
+async def update_match_score(task_id):
     try:
-        score = Score(task_id)
-        score.calculate_score()
-        score.update_status("SUCCESS")
+        score = Score(task_id, async_session)
+        await score.calculate_score()
         return True
-    except Exception as e:
+    except Exception:
         logging.exception(f"❌ Match score update failed for task_id={task_id}")
         return False
