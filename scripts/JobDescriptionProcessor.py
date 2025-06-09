@@ -1,9 +1,10 @@
 import logging
 from bs4 import BeautifulSoup
 from .parsers import ParseJobDesc
-from models import Job, JobMatched
+from models import Job
 from sqlalchemy.future import select
 from sqlalchemy.exc import NoResultFound
+from sqlalchemy import text
 
 class JobDescriptionProcessor:
     def __init__(self, task_id: str, session_factory):
@@ -57,17 +58,19 @@ class JobDescriptionProcessor:
     async def get_current_task_jobs(self):
         async with self.session_factory() as session:
             try:
-                stmt = select(JobMatched).where(JobMatched.taskRequestId == self.task_id)
-                result = await session.execute(stmt)
-                job_matched_list = result.scalars().all()
+                raw_sql = text("""
+                    SELECT j.*
+                    FROM "JobMatched" jm
+                    JOIN "Job" j ON jm."jobId" = j."id"
+                    WHERE jm."taskRequestId" = :task_id
+                    AND j."keywords" IS NOT NULL
+                    AND array_length(j."keywords", 1) = 0
+                """)
 
-                jobs_without_keywords = []
-                for jm in job_matched_list:
-                    stmt_job = select(Job).where(Job.id == jm.jobId)
-                    res = await session.execute(stmt_job)
-                    job = res.scalar_one_or_none()
-                    if job and (not job.keywords or len(job.keywords) == 0):
-                        jobs_without_keywords.append(job)
+                result = await session.execute(raw_sql, {"task_id": self.task_id})
+                rows = result.fetchall()
+
+                jobs_without_keywords = [Job(**dict(row)) for row in rows]
 
                 if not jobs_without_keywords:
                     logging.info(f"No jobs without keywords for task_id={self.task_id}")
