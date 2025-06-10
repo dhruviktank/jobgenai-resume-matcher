@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update
 from sqlalchemy.exc import NoResultFound, InterfaceError, OperationalError
+from asyncio.exceptions import CancelledError
 from sqlalchemy.orm import selectinload
 from models import TaskRequest, Resume, JobMatched
 import asyncio
@@ -176,7 +177,7 @@ class Score:
                     stmt = select(TaskRequest).where(TaskRequest.id == self.task_id)
                     result = await session.execute(stmt)
                     return result.scalar_one_or_none() is not None
-                except (InterfaceError, OperationalError) as db_error:
+                except (InterfaceError, OperationalError, CancelledError) as db_error:
                     logging.warning(f"[Retry {attempt}] ❌ DB connection error: {db_error}")
                     if attempt == max_retries:
                         logging.error("Exceeded max retries. Task validation failed.")

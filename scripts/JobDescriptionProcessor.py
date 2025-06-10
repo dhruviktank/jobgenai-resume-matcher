@@ -18,16 +18,16 @@ class JobDescriptionProcessor:
                 raise Exception(job_data["error"])
 
             for job in job_data:
-                raw_description = self.read_html_description(job.htmlDescription)
+                raw_description = self.read_html_description(job['description'])
                 parsed = ParseJobDesc(raw_description).get_JSON()
 
                 if "extracted_keywords" not in parsed:
-                    logging.warning(f"No keywords extracted for job_id={job.id}")
+                    logging.warning(f"No keywords extracted for job_id={job['id']}")
                     continue
 
-                success = await self.save_jd_keywords(job.id, parsed['extracted_keywords'])
+                success = await self.save_jd_keywords(job['id'], parsed['extracted_keywords'])
                 if success is not True:
-                    logging.error(f"Failed to update keywords for job_id={job.id}: {success}")
+                    logging.error(f"Failed to update keywords for job_id={job['id']}: {success}")
 
             return True
         except Exception as e:
@@ -59,23 +59,20 @@ class JobDescriptionProcessor:
         async with self.session_factory() as session:
             try:
                 raw_sql = text("""
-                    SELECT j.*
+                    SELECT j.id,j."htmlDescription"
                     FROM "JobMatched" jm
                     JOIN "Job" j ON jm."jobId" = j."id"
                     WHERE jm."taskRequestId" = :task_id
-                    AND j."keywords" IS NOT NULL
-                    AND array_length(j."keywords", 1) = 0
+                    AND j."keywords" IS NULL
                 """)
 
                 result = await session.execute(raw_sql, {"task_id": self.task_id})
                 rows = result.fetchall()
 
-                jobs_without_keywords = [Job(**dict(row)) for row in rows]
-
-                if not jobs_without_keywords:
+                if not rows:
                     logging.info(f"No jobs without keywords for task_id={self.task_id}")
 
-                return jobs_without_keywords
+                return [{"id": row[0], "description": row[1]} for row in rows]
             except Exception as e:
                 logging.exception(f"❌ Error fetching jobs for task_id={self.task_id}")
                 return {"error": str(e)}
