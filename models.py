@@ -57,7 +57,6 @@ class Resume(Base):
     userId = Column(String, ForeignKey("User.id"))
     jobRole = Column(String)
     jobLocation = Column(String)
-    resumeUrl = Column(String, nullable=False)
     resumeJson = Column(JSON)
     rawText = Column(Text, nullable=False)
     keywords = Column(ARRAY(String))
